@@ -37,6 +37,7 @@ npm install -g mcp-web-reader
 在 Claude Desktop 的配置文件中添加：
 
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
 **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
