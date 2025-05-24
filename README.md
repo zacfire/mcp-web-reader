@@ -14,7 +14,7 @@
 
 ### 方法 1：从源码安装
 
-\`\`\`bash
+```bash
 # 克隆仓库
 git clone https://github.com/zacfire/mcp-web-reader.git
 cd mcp-web-reader
@@ -24,22 +24,22 @@ npm install
 
 # 构建项目
 npm run build
-\`\`\`
+```
 
 ### 方法 2：使用 npm 安装（如果已发布）
 
-\`\`\`bash
+```bash
 npm install -g mcp-web-reader
-\`\`\`
+```
 
 ## 配置
 
 在 Claude Desktop 的配置文件中添加：
 
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`  
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-\`\`\`json
+```json
 {
   "mcpServers": {
     "web-reader": {
@@ -48,34 +48,34 @@ npm install -g mcp-web-reader
     }
   }
 }
-\`\`\`
+```
 
 ## 使用方法
 
 配置完成后，在 Claude 中可以使用以下命令：
 
-1. **获取单个网页**
-   - "请获取 https://example.com 的内容"
+1.  **获取单个网页**
+    * "请获取 [https://example.com](https://example.com) 的内容"
 
-2. **批量获取**
-   - "请获取这些网页：[url1, url2, url3]"
+2.  **批量获取**
+    * "请获取这些网页：[url1, url2, url3]"
 
-3. **强制使用 Jina Reader**
-   - "使用 Jina Reader 获取 https://example.com"
+3.  **强制使用 Jina Reader**
+    * "使用 Jina Reader 获取 [https://example.com](https://example.com)"
 
-4. **强制使用本地解析**
-   - "使用本地解析器获取 https://example.com"
+4.  **强制使用本地解析**
+    * "使用本地解析器获取 [https://example.com](https://example.com)"
 
 ## 工具列表
 
-- `fetch_url` - 智能获取（优先 Jina，失败切换本地）
-- `fetch_url_with_jina` - 强制使用 Jina Reader
-- `fetch_url_local` - 强制使用本地解析器
-- `fetch_multiple_urls` - 批量获取多个 URL
+-   `Workspace_url` - 智能获取（优先 Jina，失败切换本地）
+-   `Workspace_url_with_jina` - 强制使用 Jina Reader
+-   `Workspace_url_local` - 强制使用本地解析器
+-   `Workspace_multiple_urls` - 批量获取多个 URL
 
 ## 开发
 
-\`\`\`bash
+```bash
 # 开发模式（自动重新编译）
 npm run dev
 
@@ -84,7 +84,7 @@ npm run build
 
 # 测试运行
 npm start
-\`\`\`
+```
 
 ## 贡献
 
@@ -93,3 +93,4 @@ npm start
 ## 许可证
 
 MIT License
+
