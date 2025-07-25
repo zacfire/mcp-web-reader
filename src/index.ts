@@ -9,6 +9,7 @@ import {
 import fetch from "node-fetch";
 import { JSDOM } from "jsdom";
 import TurndownService from "turndown";
+import { chromium, Browser, Page } from "playwright";
 
 // 创建服务器实例
 const server = new Server(
@@ -35,6 +36,28 @@ turndownService.addRule("skipScripts", {
   replacement: () => "",
 });
 
+// 浏览器实例管理
+let browser: Browser | null = null;
+
+// 获取或创建浏览器实例
+async function getBrowser(): Promise<Browser> {
+  if (!browser) {
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+  }
+  return browser;
+}
+
+// 清理浏览器实例
+async function closeBrowser(): Promise<void> {
+  if (browser) {
+    await browser.close();
+    browser = null;
+  }
+}
+
 // URL验证函数
 function isValidUrl(urlString: string): boolean {
   try {
@@ -43,6 +66,53 @@ function isValidUrl(urlString: string): boolean {
   } catch {
     return false;
   }
+}
+
+// 检测是否需要使用浏览器模式
+function shouldUseBrowser(error: Error, statusCode?: number, content?: string): boolean {
+  const errorMessage = error.message.toLowerCase();
+  
+  // 基于HTTP状态码判断
+  if (statusCode && [403, 429, 503, 520, 521, 522, 523, 524].includes(statusCode)) {
+    return true;
+  }
+  
+  // 基于错误消息判断
+  const browserTriggers = [
+    'cloudflare',
+    'access denied',
+    'forbidden',
+    'captcha',
+    'rate limit',
+    'robot',
+    'security',
+    'blocked',
+    'protection',
+    'verification required'
+  ];
+  
+  if (browserTriggers.some(trigger => errorMessage.includes(trigger))) {
+    return true;
+  }
+  
+  // 基于响应内容判断
+  if (content) {
+    const contentLower = content.toLowerCase();
+    const contentTriggers = [
+      'cloudflare',
+      'ray id',
+      'access denied',
+      'security check',
+      'human verification',
+      'captcha'
+    ];
+    
+    if (contentTriggers.some(trigger => contentLower.includes(trigger))) {
+      return true;
+    }
+  }
+  
+  return false;
 }
 
 // 使用Jina Reader获取内容
@@ -102,6 +172,106 @@ async function fetchWithJinaReader(url: string): Promise<{
       throw new Error(`Jina Reader获取失败: ${error.message}`);
     }
     throw new Error(`Jina Reader获取失败: ${String(error)}`);
+  }
+}
+
+// 使用Playwright获取网页内容
+async function fetchWithPlaywright(url: string): Promise<{
+  title: string;
+  content: string;
+  metadata: {
+    url: string;
+    fetchedAt: string;
+    contentLength: number;
+    method: string;
+  };
+}> {
+  let page: Page | null = null;
+  
+  try {
+    const browserInstance = await getBrowser();
+    page = await browserInstance.newPage();
+    
+    // 设置更真实的User-Agent和viewport
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    });
+    
+    // 阻止加载图片、样式表等资源以提高速度
+    await page.route('**/*', (route) => {
+      const resourceType = route.request().resourceType();
+      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+        route.abort();
+      } else {
+        route.continue();
+      }
+    });
+    
+    // 导航到页面，设置30秒超时
+    await page.goto(url, { 
+      timeout: 30000,
+      waitUntil: 'domcontentloaded' 
+    });
+    
+    // 等待页面内容加载
+    await page.waitForTimeout(2000);
+    
+    // 获取页面标题
+    const title = await page.title() || "无标题";
+    
+    // 移除不需要的元素
+    await page.evaluate(() => {
+      const elementsToRemove = document.querySelectorAll(
+        'script, style, nav, header, footer, aside, .advertisement, .ads, .sidebar, .comments, .social-share'
+      );
+      elementsToRemove.forEach(el => el.remove());
+    });
+    
+    // 获取主要内容
+    const htmlContent = await page.evaluate(() => {
+      const mainContent = 
+        document.querySelector('main') || 
+        document.querySelector('article') || 
+        document.querySelector('[role="main"]') ||
+        document.querySelector('.content') ||
+        document.querySelector('#content') ||
+        document.querySelector('.post') ||
+        document.querySelector('.entry-content') ||
+        document.body;
+      
+      return mainContent ? mainContent.innerHTML : document.body.innerHTML;
+    });
+    
+    // 转换为Markdown
+    const markdown = turndownService.turndown(htmlContent);
+    
+    // 清理内容
+    const cleanedContent = markdown
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^\s+$/gm, "")
+      .trim();
+    
+    return {
+      title,
+      content: cleanedContent,
+      metadata: {
+        url,
+        fetchedAt: new Date().toISOString(),
+        contentLength: cleanedContent.length,
+        method: "playwright-browser",
+      },
+    };
+    
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(`Playwright获取失败: ${error.message}`);
+    }
+    throw new Error(`Playwright获取失败: ${String(error)}`);
+  } finally {
+    if (page) {
+      await page.close();
+    }
   }
 }
 
@@ -192,7 +362,7 @@ async function fetchWithLocalParser(url: string): Promise<{
   }
 }
 
-// 智能获取网页内容（先尝试Jina，失败则使用本地）
+// 智能获取网页内容（三层降级策略：Jina → 本地 → Playwright）
 async function fetchWebContent(url: string, preferJina: boolean = true): Promise<{
   title: string;
   content: string;
@@ -204,20 +374,53 @@ async function fetchWebContent(url: string, preferJina: boolean = true): Promise
   };
 }> {
   if (preferJina) {
+    // 第一层：尝试Jina Reader
     try {
       return await fetchWithJinaReader(url);
     } catch (jinaError) {
       console.error("Jina Reader失败，尝试本地解析:", jinaError instanceof Error ? jinaError.message : String(jinaError));
+      
+      // 第二层：尝试本地解析
       try {
         return await fetchWithLocalParser(url);
       } catch (localError) {
-        throw new Error(
-          `所有方法都失败了。Jina: ${jinaError instanceof Error ? jinaError.message : String(jinaError)}, 本地: ${localError instanceof Error ? localError.message : String(localError)}`
-        );
+        console.error("本地解析失败，检查是否需要浏览器模式:", localError instanceof Error ? localError.message : String(localError));
+        
+        // 判断是否需要使用浏览器模式
+        const jinaErr = jinaError instanceof Error ? jinaError : new Error(String(jinaError));
+        const localErr = localError instanceof Error ? localError : new Error(String(localError));
+        
+        if (shouldUseBrowser(jinaErr) || shouldUseBrowser(localErr)) {
+          console.error("检测到访问限制，使用Playwright浏览器模式");
+          try {
+            // 第三层：使用Playwright浏览器
+            return await fetchWithPlaywright(url);
+          } catch (browserError) {
+            throw new Error(
+              `所有方法都失败了。Jina: ${jinaErr.message}, 本地: ${localErr.message}, 浏览器: ${browserError instanceof Error ? browserError.message : String(browserError)}`
+            );
+          }
+        } else {
+          throw new Error(
+            `Jina和本地解析都失败了。Jina: ${jinaErr.message}, 本地: ${localErr.message}`
+          );
+        }
       }
     }
   } else {
-    return await fetchWithLocalParser(url);
+    // 如果不优先使用Jina，直接从本地解析开始
+    try {
+      return await fetchWithLocalParser(url);
+    } catch (localError) {
+      const localErr = localError instanceof Error ? localError : new Error(String(localError));
+      
+      if (shouldUseBrowser(localErr)) {
+        console.error("本地解析失败，检测到访问限制，使用Playwright浏览器模式");
+        return await fetchWithPlaywright(url);
+      } else {
+        throw localErr;
+      }
+    }
   }
 }
 
@@ -284,6 +487,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: "fetch_url_local",
         description: "强制使用本地解析器获取网页内容（适用于简单网页或Jina不可用时）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: {
+              type: "string",
+              description: "要获取内容的网页URL",
+            },
+          },
+          required: ["url"],
+        },
+      },
+      {
+        name: "fetch_url_with_browser",
+        description: "强制使用Playwright浏览器获取网页内容（适用于有访问限制的网站，如Cloudflare保护、验证码等）",
         inputSchema: {
           type: "object",
           properties: {
@@ -412,6 +629,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         ],
       };
+    } else if (name === "fetch_url_with_browser") {
+      const { url } = args as { url: string };
+      
+      if (!isValidUrl(url)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "无效的URL格式"
+        );
+      }
+      
+      const result = await fetchWithPlaywright(url);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `# ${result.title}\n\n**URL**: ${result.metadata.url}\n**获取时间**: ${result.metadata.fetchedAt}\n**内容长度**: ${result.metadata.contentLength} 字符\n**解析方法**: Playwright浏览器\n\n---\n\n${result.content}`,
+          },
+        ],
+      };
     } else {
       throw new McpError(
         ErrorCode.MethodNotFound,
@@ -433,8 +670,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("MCP Web Reader v2.0 已启动（支持Jina Reader）");
+  console.error("MCP Web Reader v2.0 已启动（支持Jina Reader + Playwright）");
 }
+
+// 优雅关闭处理
+process.on('SIGINT', async () => {
+  console.error("接收到SIGINT信号，正在关闭浏览器...");
+  await closeBrowser();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error("接收到SIGTERM信号，正在关闭浏览器...");
+  await closeBrowser();
+  process.exit(0);
+});
 
 main().catch((error) => {
   console.error("服务器启动失败:", error);
